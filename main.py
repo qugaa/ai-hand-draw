@@ -4,9 +4,12 @@ import numpy as np
 
 # Initialize Hands
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(static_image_mode=False,
-                       max_num_hands=1,
-                       )
+hands = mp_hands.Hands(
+     static_image_mode=False,
+     max_num_hands=1,
+     min_detection_confidence=0.5,
+     min_tracking_confidence=0.5)
+
 mp_draw = mp.solutions.drawing_utils
 
 # webcam
@@ -26,16 +29,63 @@ def is_hand_open(hand_landmarks):
         if tip_y < mcp_y:  # Finger is "up"
             open_fingers += 1
 
-    if open_fingers >= 3:
-	    return True
+    return open_fingers >= 3
     
 
-
-
-
-
-
-
 #boom
+
+
+def main():
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame")
+            break
+
+        # Flip and convert to RGB for Mediapipe
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = hands.process(rgb)
+
+        status_text = "No hand"
+
+        if result.multi_hand_landmarks:
+            hand_landmarks = result.multi_hand_landmarks[0]
+            # Draw skeleton
+            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+            # Decide open vs. closed
+            if is_hand_open(hand_landmarks):
+                status_text = "Hand Open"
+                color = (0, 255, 0)  # green
+            else:
+                status_text = "Hand Closed"
+                color = (0, 0, 255)  # red
+
+            # Optional: do something when open/closed
+            # e.g. trigger an action here
+
+        # Overlay status
+        cv2.putText(
+            frame,
+            status_text,
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            color if result.multi_hand_landmarks else (200, 200, 200),
+            2
+        )
+
+        cv2.imshow("Hand Tracking", frame)
+
+        # Press 'q' to quit
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
 
 
