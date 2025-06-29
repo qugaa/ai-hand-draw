@@ -1,7 +1,12 @@
+import os
+import datetime
 import mediapipe as mp
 import cv2
 import numpy as np
-from collections import deque 
+from collections import deque #for smoothing the drawing
+
+# flag to ensure saving only once per OK sign
+ok_saved = False
 
 ''' A fixed-size buffer holding the last N fingertip points for smoothing
  This is used to smoth the drawing by averaging the last few points'''
@@ -63,14 +68,29 @@ def is_pinch(hand_pos, rel_thresh=0.35):
 
     return pinch_dist_2d < (hand_size_2d * rel_thresh)
 
+
+'''detect OK sign: thumb and index touch and other fingers extended'''
+def is_ok_sign(hand_pos, rel_thresh=0.35):
+    # pinch condition
+    if not is_pinch(hand_pos, rel_thresh):
+        return False
+    # count open for middle, ring, pinky
+    other_tips = [12, 16, 20]
+    other_mcps = [9, 13, 17]
+    open_count = 0
+    for tip_id, mcp_id in zip(other_tips, other_mcps):
+        tip = hand_pos.landmark[tip_id]
+        mcp = hand_pos.landmark[mcp_id]
+        if mcp.y - tip.y > 0.01:
+            open_count += 1
+    return open_count >= 3
     
 #I'll try drawing here
-
 def drawing():
-    global canvas, prev_x, prev_y, point_buffer
+    global canvas, prev_x, prev_y, point_buffer, ok_saved
     while True:
         exists_frame, frame = cap.read()
-        if exists_frame == False:
+        if not exists_frame:
             print("no frame")
             break
 
@@ -103,24 +123,42 @@ def drawing():
             ''' we calculate the average of the last N points in the buffer'''
 
 
-            ''' now we use (avg_x, avg_y) instead of (cx, cy) below
+            ''' now we Check OK sign to save canvas, we use (avg_x, avg_y) instead of (cx, cy) for smoothing
             and open hand now erases'''
-            if is_pinch(hands_exactly_there):
+            
+            if is_ok_sign(hands_exactly_there):
+                if not ok_saved:
+                    save_dir = os.path.expanduser("~/Desktop")
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"board_{timestamp}.png"
+                    path = os.path.join(save_dir, filename)
+                    cv2.imwrite(path, canvas)
+                    ok_saved = True
+                mode_text = f"Saved: {filename}"
+                # small delay to avoid multiple saves, allow quitting
+                delay_key = cv2.waitKey(2000) & 0xFF
+                if delay_key == ord('q'):
+                    break
+            elif is_pinch(hands_exactly_there):
+
                 # draw smooth line
                 if prev_x is not None and prev_y is not None:
                     cv2.line(canvas, (prev_x, prev_y), (avg_x, avg_y), (255, 255, 255), 5)
                 else:
                     cv2.circle(canvas, (avg_x, avg_y), 8, (255, 255, 255), -1)
                 prev_x, prev_y = avg_x, avg_y
+                ok_saved = False
                 mode_text = "Drawing"
             elif is_hand_open(hands_exactly_there):
                 # erase with big black circle at smoothed point
                 cv2.circle(canvas, (avg_x, avg_y), 30, (0, 0, 0), -1)
                 prev_x, prev_y = None, None
+                ok_saved = False
                 mode_text = "Erasing"
             else:
                 # pen up: reset tracking
                 prev_x, prev_y = None, None
+                ok_saved = False
                 mode_text = "Pen Up"
                         
                    
@@ -136,10 +174,10 @@ def drawing():
 
         #This part, I just stole it from your code
         '''i stole it from gpt anyways :D but I rewrote it more human also it's all our code now'''
-        key = cv2.waitKey(1)
+        key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        
+       
     cap.release()
     cv2.destroyAllWindows()
 
