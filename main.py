@@ -127,20 +127,6 @@ def drawing():
     cv2.destroyAllWindows()
 
 
-#Here I realized, this version of the code had two main issues, 1st is that you can't lift the hands, 2nd is that you can't draw smooth lines
-#1st, I'll try to come up with a gesture, where you can imitate the taking pen away from the paper, maybe that could be the pinch, if tou're pinching then you write
-#if your tumb is not touching  to yor index, then you could stop writing
-#This bit is partly handled, still can use some extra help
-
-#Now, for the 2nd, I'll try to create a way to make it actually write
-#For that, I was thinking building a way to connect dots with each other
-
-#It is still quite hard to use,i but I have an idea that I lowkey believe that it's brilliant. What if we use the size of the hand to estimate the distances,
-#sO THAT WE COULD USE OUR İMAGİNARY PEN AS A NORMAL, ANY PEN
-
-
-
-
 #Here I just tweaked it a bit so I could try the bit I just wrote
 if __name__ == "__main__":
     drawing()
