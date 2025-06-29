@@ -15,6 +15,12 @@ mp_draw = mp.solutions.drawing_utils
 # webcam
 cap = cv2.VideoCapture(0)
 
+#initialize Canvas (new added, I started up with the drawing logic)
+canvas = None
+
+#this is for tracking 
+prev_x, prev_y = None, None
+
 def is_hand_open(hand_landmarks):
     # Tip and MCP landmarks for: index, middle, ring, pinky
     finger_tips = [8, 12, 16, 20]
@@ -30,62 +36,102 @@ def is_hand_open(hand_landmarks):
             open_fingers += 1
 
     return open_fingers >= 3
+
+#For optimization 1, I started by defining a function to detect the pinch
+
+def is_pinch(hand_pos):
     
+    index_tip = hand_pos.landmark[8]
+    thumb_tip = hand_pos.landmark[4]
 
-#boom
+    dist = ((index_tip.x - thumb_tip.x) ** 2 + (index_tip.y - thumb_tip.y) ** 2) ** 0.5
+
+    return dist < 0.1
+#if returns true, means that its a pinch
 
 
-def main():
+
+    
+#I'll try drawing here
+
+def drawing():
+    global canvas, prev_x, prev_y
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed to grab frame")
+        exists_frame, frame = cap.read()
+        if exists_frame == False:
+            print("no frame")
             break
 
-        # Flip and convert to RGB for Mediapipe
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = hands.process(rgb)
+        hands_where = hands.process(rgb)
 
-        status_text = "No hand"
-
-        if result.multi_hand_landmarks:
-            hand_landmarks = result.multi_hand_landmarks[0]
-            # Draw skeleton
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-            # Decide open vs. closed
-            if is_hand_open(hand_landmarks):
-                status_text = "Hand Open"
-                color = (0, 255, 0)  # green
+        #if there is nothing on the canvas, we create a black one
+        if canvas is None:
+            canvas = np.zeros_like(frame)
+        
+        if hands_where.multi_hand_landmarks:
+            #I realized that hands_where, we can't use it, since it's more like if hands detected or not
+            #So now, I have hands_exactly_there, which contains the position of hands
+            hands_exactly_there = hands_where.multi_hand_landmarks[0]
+            mp_draw.draw_landmarks(frame, hands_exactly_there, mp_hands.HAND_CONNECTIONS)
+        
+            #here I got some help, also lernt that mediapipe gives us positions 0,1, so I had to multiply them with actual lenghts 
+            #so thet I had actual coorinates for the index finger
+            h, w, _ = frame.shape
+            index_finger = hands_exactly_there.landmark[8]
+            cx, cy = int(index_finger.x * w), int(index_finger.y * h)
+            if is_pinch(hands_exactly_there):
+                #here we check if hand is open and we erase, by drawing black dots
+                if is_hand_open(hands_exactly_there):
+                    color = (0, 0, 255)
+                    cv2.circle(canvas, (cx, cy), 30, (0, 0, 0), -1)
+                    prev_x, prev_y = None, None #to reset while erasing
+            
+                #else we draw
+                else:
+                    if prev_x is not None and prev_y is not None:
+                        cv2.line(canvas, (prev_x, prev_y), (cx, cy), (255, 255, 255), 5)
+                    else:
+                        color = (0, 255, 0)
+                        cv2.circle(canvas, (cx, cy), 8, (255, 255, 255), -1)
+                    prev_x, prev_y = cx, cy
             else:
-                status_text = "Hand Closed"
-                color = (0, 0, 255)  # red
+                #now we have the pen up, again, we need to reset
+                prev_x, prev_y = None, None
+        
+        #putting them together was not as hard as we expected...
+        output = cv2.addWeighted(frame, 1, canvas, 1, 0)
 
-            # Optional: do something when open/closed
-            # e.g. trigger an action here
+        #also, showing them was not as hard
+        cv2.imshow("Virtual Drawing", output)
 
-        # Overlay status
-        cv2.putText(
-            frame,
-            status_text,
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            color if result.multi_hand_landmarks else (200, 200, 200),
-            2
-        )
+        #This part, I just stole it from your code
 
-        cv2.imshow("Hand Tracking", frame)
-
-        # Press 'q' to quit
+                # Press 'q' to quit
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
+
+#Here I realized, this version of the code had two main issues, 1st is that you can't lift the hands, 2nd is that you can't draw smooth lines
+#1st, I'll try to come up with a gesture, where you can imitate the taking pen away from the paper, maybe that could be the pinch, if tou're pinching then you write
+#if your tumb is not touching  to yor index, then you could stop writing
+#This bit is partly handled, still can use some extra help
+
+#Now, for the 2nd, I'll try to create a way to make it actually write
+#For that, I was thinking building a way to connect dots with each other
+
+#It is still quite hard to use,i but I have an idea that I lowkey believe that it's brilliant. What if we use the size of the hand to estimate the distances,
+#sO THAT WE COULD USE OUR İMAGİNARY PEN AS A NORMAL, ANY PEN
+
+
+
+
+#Here I just tweaked it a bit so I could try the bit I just wrote
 if __name__ == "__main__":
-    main()
+    drawing()
 
 
