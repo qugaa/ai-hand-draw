@@ -1,6 +1,13 @@
 import mediapipe as mp
 import cv2
 import numpy as np
+from collections import deque 
+'''for smoothing the drawing'''
+
+''' A fixed-size buffer holding the last N fingertip points for smoothing
+ This is used to smoth the drawing by averaging the last few points'''
+SMOOTHING_WINDOW = 5                    # ← define window size
+point_buffer = deque(maxlen=SMOOTHING_WINDOW)  # ← initialize buffer
 
 # Initialize Hands
 mp_hands = mp.solutions.hands
@@ -81,23 +88,27 @@ def drawing():
             h, w, _ = frame.shape
             index_finger = hands_exactly_there.landmark[8]
             cx, cy = int(index_finger.x * w), int(index_finger.y * h)
+
+            point_buffer.append((cx, cy))           
+            ''' add the newest fingertip point'''
+
+            avg_x = int(sum(p[0] for p in point_buffer) / len(point_buffer))
+            avg_y = int(sum(p[1] for p in point_buffer) / len(point_buffer))
+            ''' calculate the average of the last N points in the buffer'''
+
+
+            ''' now use (avg_x, avg_y) instead of (cx, cy) below'''
             if is_pinch(hands_exactly_there):
-                #here we check if hand is open and we erase, by drawing black dots
                 if is_hand_open(hands_exactly_there):
-                    color = (0, 0, 255)
-                    cv2.circle(canvas, (cx, cy), 30, (0, 0, 0), -1)
-                    prev_x, prev_y = None, None #to reset while erasing
-            
-                #else we draw
+                    cv2.circle(canvas, (avg_x, avg_y), 30, (0, 0, 0), -1)
+                    prev_x, prev_y = None, None
                 else:
                     if prev_x is not None and prev_y is not None:
-                        cv2.line(canvas, (prev_x, prev_y), (cx, cy), (255, 255, 255), 5)
+                        cv2.line(canvas, (prev_x, prev_y), (avg_x, avg_y), (255, 255, 255), 5)
                     else:
-                        color = (0, 255, 0)
-                        cv2.circle(canvas, (cx, cy), 8, (255, 255, 255), -1)
-                    prev_x, prev_y = cx, cy
+                        cv2.circle(canvas, (avg_x, avg_y), 8, (255, 255, 255), -1)
+                    prev_x, prev_y = avg_x, avg_y
             else:
-                #now we have the pen up, again, we need to reset
                 prev_x, prev_y = None, None
         
         #putting them together was not as hard as we expected...
