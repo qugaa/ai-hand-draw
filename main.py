@@ -2,7 +2,6 @@ import mediapipe as mp
 import cv2
 import numpy as np
 from collections import deque 
-'''for smoothing the drawing'''
 
 ''' A fixed-size buffer holding the last N fingertip points for smoothing
  This is used to smoth the drawing by averaging the last few points'''
@@ -29,40 +28,46 @@ canvas = None
 prev_x, prev_y = None, None
 
 def is_hand_open(hand_landmarks):
-    # Tip and MCP landmarks for: index, middle, ring, pinky
     finger_tips = [8, 12, 16, 20]
     finger_mcps = [5, 9, 13, 17]
 
     open_fingers = 0
 
     for tip_id, mcp_id in zip(finger_tips, finger_mcps):
-        tip_y = hand_landmarks.landmark[tip_id].y
-        mcp_y = hand_landmarks.landmark[mcp_id].y
+        tip = hand_landmarks.landmark[tip_id]
+        mcp = hand_landmarks.landmark[mcp_id]
         
-        if tip_y < mcp_y:  # Finger is "up"
+        '''trying to combine vertical (Y) and depth (Z) to check angled hands'''
+        dy = mcp.y - tip.y            # positive if tip is above mcp in image
+        dz = abs(mcp.z - tip.z)       # small if finger not tilted out of palm plane
+
+        if dy > 0.01 or dz < 0.02:
             open_fingers += 1
+    return open_fingers >= 4
 
-    return open_fingers >= 3
+'''trying pinch detection relative to hand size'''
+def is_pinch(hand_pos, rel_thresh=0.35):
 
-#For optimization 1, I started by defining a function to detect the pinch
+    it = hand_pos.landmark[8]   # index fingertip
+    tt = hand_pos.landmark[4]   # thumb tip
+    dx = it.x - tt.x
+    dy = it.y - tt.y
+    pinch_dist_2d = (dx*dx + dy*dy) ** 0.5
 
-def is_pinch(hand_pos):
-    
-    index_tip = hand_pos.landmark[8]
-    thumb_tip = hand_pos.landmark[4]
+    # measure normalized hand size via wrist (0) to middle_finger MCP (9), 2D only
+    w = hand_pos.landmark[0]
+    m = hand_pos.landmark[9]
+    hx = w.x - m.x
+    hy = w.y - m.y
+    hand_size_2d = (hx*hx + hy*hy) ** 0.5
 
-    dist = ((index_tip.x - thumb_tip.x) ** 2 + (index_tip.y - thumb_tip.y) ** 2) ** 0.5
-
-    return dist < 0.1
-#if returns true, means that its a pinch
-
-
+    return pinch_dist_2d < (hand_size_2d * rel_thresh)
 
     
 #I'll try drawing here
 
 def drawing():
-    global canvas, prev_x, prev_y
+    global canvas, prev_x, prev_y, point_buffer
     while True:
         exists_frame, frame = cap.read()
         if exists_frame == False:
@@ -76,7 +81,8 @@ def drawing():
         #if there is nothing on the canvas, we create a black one
         if canvas is None:
             canvas = np.zeros_like(frame)
-        
+
+        mode_text = ""
         if hands_where.multi_hand_landmarks:
             #I realized that hands_where, we can't use it, since it's more like if hands detected or not
             #So now, I have hands_exactly_there, which contains the position of hands
@@ -85,44 +91,55 @@ def drawing():
         
             #here I got some help, also lernt that mediapipe gives us positions 0,1, so I had to multiply them with actual lenghts 
             #so thet I had actual coorinates for the index finger
-            h, w, _ = frame.shape
+            frame_h, frame_w, _ = frame.shape
             index_finger = hands_exactly_there.landmark[8]
-            cx, cy = int(index_finger.x * w), int(index_finger.y * h)
+            cx, cy = int(index_finger.x * frame_w), int(index_finger.y * frame_h)
 
             point_buffer.append((cx, cy))           
-            ''' add the newest fingertip point'''
+            ''' we add the newest fingertip point'''
 
             avg_x = int(sum(p[0] for p in point_buffer) / len(point_buffer))
             avg_y = int(sum(p[1] for p in point_buffer) / len(point_buffer))
-            ''' calculate the average of the last N points in the buffer'''
+            ''' we calculate the average of the last N points in the buffer'''
 
 
-            ''' now use (avg_x, avg_y) instead of (cx, cy) below'''
+            ''' now we use (avg_x, avg_y) instead of (cx, cy) below
+            and open hand now erases'''
             if is_pinch(hands_exactly_there):
-                if is_hand_open(hands_exactly_there):
-                    cv2.circle(canvas, (avg_x, avg_y), 30, (0, 0, 0), -1)
-                    prev_x, prev_y = None, None
+                # draw smooth line
+                if prev_x is not None and prev_y is not None:
+                    cv2.line(canvas, (prev_x, prev_y), (avg_x, avg_y), (255, 255, 255), 5)
                 else:
-                    if prev_x is not None and prev_y is not None:
-                        cv2.line(canvas, (prev_x, prev_y), (avg_x, avg_y), (255, 255, 255), 5)
-                    else:
-                        cv2.circle(canvas, (avg_x, avg_y), 8, (255, 255, 255), -1)
-                    prev_x, prev_y = avg_x, avg_y
-            else:
+                    cv2.circle(canvas, (avg_x, avg_y), 8, (255, 255, 255), -1)
+                prev_x, prev_y = avg_x, avg_y
+                mode_text = "Drawing"
+            elif is_hand_open(hands_exactly_there):
+                # erase with big black circle at smoothed point
+                cv2.circle(canvas, (avg_x, avg_y), 30, (0, 0, 0), -1)
                 prev_x, prev_y = None, None
-        
+                mode_text = "Erasing"
+            else:
+                # pen up: reset tracking
+                prev_x, prev_y = None, None
+                mode_text = "Pen Up"
+                        
+                   
         #putting them together was not as hard as we expected...
         output = cv2.addWeighted(frame, 1, canvas, 1, 0)
+
+        '''overlay mode text in corner, comment out to remove'''
+        cv2.putText(output, mode_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    1, (0, 255, 0), 2, cv2.LINE_AA)  
 
         #also, showing them was not as hard
         cv2.imshow("Virtual Drawing", output)
 
         #This part, I just stole it from your code
-
-                # Press 'q' to quit
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        '''i stole it from gpt anyways :D but I rewrote it more human also it's all our code now'''
+        key = cv2.waitKey(1)
+        if key == ord('q'):
             break
-
+        
     cap.release()
     cv2.destroyAllWindows()
 
