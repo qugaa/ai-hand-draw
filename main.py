@@ -1,457 +1,291 @@
-import os
-import datetime
-import time
-import mediapipe as mp         # For hand tracking and gesture recognition
-import cv2                     # For camera handling and image processing
-import numpy as np             # For array/image manipulations
-from collections import deque  # For smoothing finger movement
-import fitz                    # PyMuPDF, for advanced PDF manipulation (not used for drawing, but can be extended)
-from pdf2image import convert_from_path # For converting PDF pages into images
+# -*- coding: utf-8 -*-
+"""
+main.py: Core application orchestrator for the PDF Gesture Annotation Tool.
+Loads PDFs, initializes gesture/canvas state, and runs the main annotation loop.
+Shared state (pages, canvases, etc.) is maintained in the config module.
+"""
 
-# Import Tkinter just for file dialog (lets user pick a PDF visually)
-from tkinter import Tk, filedialog
+# --- Standard library imports ---
+import time  # Time functions for measuring durations (e.g., OK gesture hold time)
 
-# ----- GLOBAL CONFIGURATION AND VARIABLES -----
+# --- Third-party imports ---
+import cv2             # OpenCV for video capture and image display
+import numpy as np     # NumPy for image array operations
 
-SMOOTHING_WINDOW = 5  # Number of fingertip points to average for smoother lines
-point_buffer = deque(maxlen=SMOOTHING_WINDOW)  # Holds last N fingertip points
+# --- Local module imports ---
+import config                                   # Import the config module containing global state
+from pdf_loader import load_pdf                 # Function to load PDF pages into memory
+from gestures import is_hand_open, is_pinch, is_ok_sign  # Gesture detection helper functions
+from ui_helpers import get_button_specs, draw_buttons, save_annotated_page  # UI helper functions
 
-# Initialize Mediapipe's hand tracking solution
-mp_hands = mp.solutions.hands  # type: ignore[attr-defined] getting rid of annoyind type checking error
-hands = mp_hands.Hands(
-    static_image_mode=False,      # Live video (not single image mode)
-    max_num_hands=1,              # Track only one hand at a time
-    min_detection_confidence=0.5, # Minimum confidence for detection
-    min_tracking_confidence=0.5   # Minimum confidence for tracking
-)
-mp_draw = mp.solutions.drawing_utils # Utility to draw hand landmarks on frames #type: ignore[attr-defined] again, ignore type checking error
-
-# OpenCV: Start webcam capture (device 0 is default camera)
-cap = cv2.VideoCapture(0)
-
-# Canvas: Will hold the user's drawing strokes (overlay)
-canvas = None
-prev_x, prev_y = None, None # To remember the previous finger position (for continuous lines)
-
-# ----- PDF-related GLOBALS -----
-
-pdf_pages = []        # Will store each PDF page as an image (list of np.arrays)
-page_canvases = []    # For each PDF page, a corresponding blank canvas for drawings
-current_page = 0      # Which page is currently being annotated/viewed
-
-# ----- FILE PICKER AND PDF LOADING -----
-
-def load_pdf():
+def run_annotation_loop():
     """
-    Allows the user to pick a PDF file using a dialog, converts each page of that PDF to an image,
-    and prepares a blank drawing canvas for each page.
+    Runs the main real-time annotation loop:
+      1. Captures video frames from the webcam.
+      2. Detects hand landmarks and identifies gestures.
+      3. Draws or erases on the canvas based on gestures.
+      4. Navigates pages when swipe gestures are detected.
+      5. Saves the annotated page when an OK gesture is held.
+      6. Overlays annotations and UI on the PDF page and displays it.
     """
-    global pdf_pages, page_canvases, current_page
+    # Ensure a PDF is loaded before starting the loop
+    if not config.pdf_pages:
+        print("No PDF loaded. Exiting.")
+        return
 
-    # Hide the main Tkinter window (we only want the file dialog)
-    root = Tk()
-    root.withdraw()
+    # If the webcam is not open (e.g., after a previous run), open it
+    if not config.cap.isOpened():
+        config.cap = cv2.VideoCapture(0)
+    if not config.cap.isOpened():
+        print("Error: Cannot access webcam.")
+        return
 
-    # Open a file dialog, allowing user to choose a PDF file
-    file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
-    if not file_path:
-        print("No PDF selected")
-        exit()  # Quit the script if no file is chosen
+    # Reset drawing state and buffers at the start of the loop
+    config.prev_x, config.prev_y = None, None
+    config.point_buffer.clear()
 
-    # Convert each page of the selected PDF into a PIL Image at 150 DPI (good balance quality/speed)
-    pil_pages = convert_from_path(file_path, dpi=150)
-
-    # Convert each PIL image to an OpenCV BGR image (for drawing and display)
-    pdf_pages = [cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR) for pil in pil_pages]
-
-    # For each page, create a blank (black) canvas for user's annotations (same size as the page)
-    page_canvases = [np.zeros_like(pdf_pages[0]) for _ in pdf_pages]
-
-    current_page = 0  # Start at the first page
-
-# ----- HAND GESTURE UTILITIES -----
-
-def is_hand_open(hand_landmarks):
-    """
-    Returns True if most fingers are extended (open hand), False otherwise.
-    Used for erasing gesture.
-    """
-    finger_tips = [8, 12, 16, 20]     # Landmark indices for finger tips
-    finger_mcps = [5, 9, 13, 17]      # Landmark indices for finger MCPs (knuckles/base)
-
-    open_fingers = 0
-    for tip_id, mcp_id in zip(finger_tips, finger_mcps):
-        tip = hand_landmarks.landmark[tip_id]
-        mcp = hand_landmarks.landmark[mcp_id]
-        dy = mcp.y - tip.y           # Finger is "up" if tip is above mcp (y-axis, normalized coords)
-        dz = abs(mcp.z - tip.z)      # Small difference means finger is not tilted much
-
-        if dy > 0.01 or dz < 0.02:
-            open_fingers += 1
-    return open_fingers >= 4  # True if at least 4 fingers open
-
-def is_pinch(hand_pos, rel_thresh=0.35):
-    """
-    Returns True if index finger tip and thumb tip are close together (pinch gesture), False otherwise.
-    Used for "pen down" (drawing).
-    """
-    it = hand_pos.landmark[8]   # Index fingertip
-    tt = hand_pos.landmark[4]   # Thumb tip
-
-    dx = it.x - tt.x
-    dy = it.y - tt.y
-    pinch_dist_2d = (dx*dx + dy*dy) ** 0.5
-
-    # Hand size normalization: distance from wrist (0) to middle finger MCP (9)
-    w = hand_pos.landmark[0]
-    m = hand_pos.landmark[9]
-    hx = w.x - m.x
-    hy = w.y - m.y
-    hand_size_2d = (hx*hx + hy*hy) ** 0.5
-
-    return pinch_dist_2d < (hand_size_2d * rel_thresh)
-
-def is_ok_sign(hand_pos, rel_thresh=0.35):
-    """
-    Returns True if the "OK" sign is shown: index and thumb touch, other fingers extended.
-    Used to trigger save action.
-    """
-    # Must be pinched
-    if not is_pinch(hand_pos, rel_thresh):
-        return False
-
-    # Check if other three fingers are extended
-    other_tips = [12, 16, 20]
-    other_mcps = [9, 13, 17]
-    open_count = 0
-    for tip_id, mcp_id in zip(other_tips, other_mcps):
-        tip = hand_pos.landmark[tip_id]
-        mcp = hand_pos.landmark[mcp_id]
-        if mcp.y - tip.y > 0.01:
-            open_count += 1
-    return open_count >= 3  # True if middle, ring, pinky are open
-
-# ----- MAIN DRAWING/ANNOTATION LOOP -----
-
-def drawing():
-    """
-    Main loop for live hand gesture recognition, annotation, erasing, and navigation.
-    Now also shows a fingertip cursor and ensures layering is always correct.
-    """
-    global canvas, prev_x, prev_y, point_buffer, pdf_pages, page_canvases, current_page
-
-    ok_saved     = False          # Prevents multiple saves per OK gesture
-    pen_color    = (0, 0, 255)    # initial pen color Red
-    cursor_color = (0, 255, 0)    # Green for fingertip cursor
-    # ——— gesture-click state ———
-    prev_gesture = "pen_up"       # to detect pen-up → pinch transitions
-    click_feedback = ""           # feedback string shown on screen
-
-    from collections import deque
-    SWIPE_BUFFER_SIZE     = 16
-    SWIPE_THRESHOLD_PX    = 400
-    SWIPE_COOLDOWN_FRAMES = 20
-    swipe_buffer   = deque(maxlen=SWIPE_BUFFER_SIZE)
-    swipe_cooldown = 0
-
-    # --- OK-sign hold detection setup ---
-    hold_start          = None
-    HOLD_DURATION       = 2.0
-    HOLD_FAULT_TOLERANCE = 0.2
-
-    #  make window resizable by the user
+    # Prepare the display window (match window size to the first PDF page dimensions)
     cv2.namedWindow("PDF Annotation", cv2.WINDOW_NORMAL)
+    page_h, page_w = config.pdf_pages[0].shape[:2]        # Height and width of the first page image
+    cv2.resizeWindow("PDF Annotation", page_w, page_h)    # Set the OpenCV window to the PDF page size
 
-    #  size the window to the first page
-    page_img = pdf_pages[current_page]
-    h, w     = page_img.shape[:2]
-    cv2.resizeWindow("PDF Annotation", w, h)
+    # --- Initialize gesture state flags and variables ---
+    ok_saved = False           # Indicates if a save action was performed after detecting OK gesture (to prevent multiple saves per hold)
+    prev_gesture = "pen_up"    # Tracks the previous gesture state ("pen_up", "drawing", etc.)
+    click_feedback = ""       # Text feedback for UI button clicks or page changes
+    feedback_frames = 0       # Counter for how many frames to display the feedback text
+    hold_start = None         # Start time when an OK-sign gesture is first detected (for save hold timing)
+    HOLD_DURATION = 2.0       # Time in seconds to hold the OK gesture to trigger save
+    HOLD_FAULT_TOLERANCE = 0.2# Additional time buffer to ensure reliable hold detection
 
-    # ——— DEFINE YOUR BUTTONS ONCE, BASED ON PAGE SIZE ———
-    labels = [("Red",   (0,0,255)),
-             ("Blue",  (255,0,0)),
-             ("Black", (10,10,10)),   # “almost black,” but will pass gray>1
-             ("Clear", (50,50,50))]
-    button_size = 100
-    spacing     = 20
-    total_h     = len(labels)*button_size + (len(labels)-1)*spacing
-    y_start     = h//2 - total_h//2
-    x1_left     = 20
+    # --- Swipe gesture detection setup ---
+    from collections import deque
+    SWIPE_BUFFER_SIZE = 16    # Number of recent frames to consider for swipe movement
+    SWIPE_THRESHOLD_PX = 400  # Minimum horizontal movement (in pixels) to qualify as a swipe
+    SWIPE_COOLDOWN = 20       # Cooldown period (in frames) after a swipe to avoid immediate repeat
+    swipe_buffer = deque(maxlen=SWIPE_BUFFER_SIZE)  # Buffer to store recent finger x-coordinates for swipe analysis
+    swipe_cooldown = 0        # Counter for swipe cooldown frames remaining
 
-    button_specs = []
-    for idx, (lbl, col) in enumerate(labels):
-        y1 = y_start + idx*(button_size + spacing)
-        button_specs.append({
-            "label": lbl,
-            "color": col,
-            "pos":   (x1_left, y1, x1_left+button_size, y1+button_size)
-        })
-
-    # track previous gesture state for click detection
-    prev_gesture = "pen_up"
-
+    # --- Main loop for reading camera frames and handling gestures ---
     while True:
-        exists_frame, frame = cap.read()
-        if not exists_frame:
+        # 1. Capture a frame from the webcam
+        ret, frame = config.cap.read()
+        if not ret:
+            # If frame capture failed (camera disconnected or end of stream), exit the loop
+            print("Camera capture failed or ended.")
             break
+        frame = cv2.flip(frame, 1)  # Mirror the frame horizontally for natural interaction (like a mirror)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR frame to RGB for Mediapipe processing
 
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        hands_where = hands.process(rgb)
+        # 2. Hand landmark detection using Mediapipe
+        results = config.hands.process(rgb_frame)  # Process the frame to detect hand landmarks
 
-        # === CHANGE: Always use the current PDF page and its canvas ===
-        # This ensures you never draw behind or "lose" your drawing.
-        # canvas is always the one associated with the current PDF page.
-        if pdf_pages:
-            page_img = pdf_pages[current_page].copy()
-            canvas = page_canvases[current_page]
+        # 3. Prepare the current PDF page image and its annotation canvas
+        page_img = config.pdf_pages[config.current_page].copy()   # Copy of the current page (to draw annotations onto for display)
+        canvas = config.page_canvases[config.current_page]        # Current annotation canvas for this page
+        # Ensure the canvas matches the page dimensions (in case of page size differences)
+        if canvas.shape[:2] != page_img.shape[:2]:
+            # Resize the canvas to match the page, using nearest-neighbor for pixel alignment
+            canvas = cv2.resize(canvas, (page_img.shape[1], page_img.shape[0]), interpolation=cv2.INTER_NEAREST)
+            config.page_canvases[config.current_page] = canvas  # Update stored canvas to the new size
 
-        else:
-            # If no PDF loaded (shouldn't happen in normal use), use a dummy frame.
-            if canvas is None:
-                canvas = np.zeros_like(frame)
-            page_img = np.zeros_like(frame)
-        
-        if canvas.shape != page_img.shape:
-            canvas = cv2.resize(
-                canvas,
-                (page_img.shape[1], page_img.shape[0]),
-                interpolation=cv2.INTER_NEAREST
-            )
-        
+        # 4. Determine UI button layout based on the page size
+        button_specs = get_button_specs(page_img.shape)
 
+        # 5. Initialize status text and cursor visibility for this frame
+        mode_text = f"Page: {config.current_page + 1}/{len(config.pdf_pages)}"  # Start with page number info
+        draw_cursor = False  # Will set to True if a fingertip position is available to draw a cursor
+        avg_x = avg_y = None # Smoothed fingertip coordinates (if available)
+        ok_now = False       # True if an OK-sign gesture is detected in the current frame
 
-        # Prepare the mode text to display on the screen
-        mode_text = f"Page: {current_page+1}/{len(pdf_pages)}  "
+        # 6. Process hand landmarks and gestures if a hand is detected in the frame
+        if results.multi_hand_landmarks:
+            # Take the first detected hand (we only track one hand at a time)
+            hand_landmarks = results.multi_hand_landmarks[0]
+            # (Optional) Draw the hand landmarks on the original camera frame for debugging
+            config.mp_draw.draw_landmarks(frame, hand_landmarks, config.mp_hands.HAND_CONNECTIONS)
 
-        # This flag enables the cursor drawing logic
-        draw_cursor = False
-        avg_x, avg_y = 0, 0  # Defaults if no hand is detected
-        ok_now = False # Tracks whether OK sign is currently detected
+            # Compute the finger tip (index finger tip) coordinates in image pixels
+            img_h, img_w = page_img.shape[:2]                  # Page image dimensions
+            # Normalized coordinates (0 to 1) of the index fingertip (Mediapipe landmark index 8)
+            norm_x = hand_landmarks.landmark[8].x
+            norm_y = hand_landmarks.landmark[8].y
+            # Convert normalized coordinates to image pixel coordinates
+            cx = int(norm_x * img_w)
+            cy = int(norm_y * img_h)
 
-        if hands_where.multi_hand_landmarks:
-            hands_exactly_there = hands_where.multi_hand_landmarks[0]
-            mp_draw.draw_landmarks(frame, hands_exactly_there, mp_hands.HAND_CONNECTIONS)
+            # Smooth the cursor motion by averaging over the last few positions
+            config.point_buffer.append((cx, cy))
+            avg_x = sum(pt[0] for pt in config.point_buffer) // len(config.point_buffer)
+            avg_y = sum(pt[1] for pt in config.point_buffer) // len(config.point_buffer)
+            draw_cursor = True  # Indicate that we have a cursor position to draw
 
-            # === CHANGE: Use PDF's page size for all coordinates ===
-            # Fixes bugs with different webcam/PDF sizes!
-            frame_h, frame_w, _ = page_img.shape
-            index_finger = hands_exactly_there.landmark[8]
-            cx, cy = int(index_finger.x * frame_w), int(index_finger.y * frame_h)
+            # 6a. OK-sign gesture (index finger and thumb touching, other fingers up) for save action
+            if is_ok_sign(hand_landmarks):
+                ok_now = True
+                mode_text += " | OK held"  # Add status text indicating the OK gesture is being held
 
-            # === CHANGE: Always smooth fingertip motion for less jittery drawing ===
-            point_buffer.append((cx, cy))
-            avg_x = int(sum(p[0] for p in point_buffer) / len(point_buffer))
-            avg_y = int(sum(p[1] for p in point_buffer) / len(point_buffer))
-            draw_cursor = True  # Only show cursor when a hand is detected
-
-            # === CHANGE: All drawing/writing happens on the canvas for the current page ===
-            if is_ok_sign(hands_exactly_there):
-                 ok_now = True
-                 mode_text += "OK held"
-            elif is_pinch(hands_exactly_there):
+            # 6b. Pinch gesture for drawing or UI button clicks
+            if is_pinch(hand_landmarks):
+                # Cancel any ongoing OK-sign save timing
                 hold_start = None
-                ok_saved   = False
-                mode_text += "Drawing"
+                ok_saved = False
+                mode_text += " | Drawing"
 
-                # DETECT a “click” when going from pen_up → drawing over a button:
-                cur_gesture = "drawing"
+                # On the very first frame of a new pinch (prev_gesture was pen_up),
+                # check if the finger is “clicking” on a UI button:
                 if prev_gesture == "pen_up":
                     for btn in button_specs:
-                        x1,y1,x2,y2 = btn["pos"]
+                        x1, y1, x2, y2 = btn['pos']
                         if x1 <= avg_x <= x2 and y1 <= avg_y <= y2:
-                            # perform button action
+                            # We clicked a button—give feedback and perform action:
                             click_feedback = f"Clicked: {btn['label']}"
-                            if btn["label"] == "Clear":
-                                page_canvases[current_page][:] = 0
+                            feedback_frames = 60  # show for ~2 seconds
+                            if btn['label'] == 'Clear':
+                                # Erase entire canvas for this page
+                                config.page_canvases[config.current_page][:] = 0
                             else:
-                                pen_color = btn["color"]
-                            # skip drawing this frame
-                            prev_x, prev_y = None, None
+                                # Change pen color to the button’s color
+                                config.pen_color = btn['color']
+                            # Reset previous line endpoint so stroke restarts next time
+                            config.prev_x, config.prev_y = None, None
                             break
-                    else:
-                        # no button hit → normal drawing
-                        if prev_x is not None and prev_y is not None:
-                            cv2.line(canvas, (prev_x, prev_y), (avg_x, avg_y), pen_color, 5)
-                        else:
-                            cv2.circle(canvas, (avg_x, avg_y), 8, pen_color, -1)
-                        prev_x, prev_y = avg_x, avg_y
+
+                # --- ALWAYS draw a stroke (line or dot) on every frame of pinch ---
+                if config.prev_x is not None and config.prev_y is not None:
+                    # Continue the line from last point to this frame’s avg_x,avg_y
+                    cv2.line(canvas,
+                             (config.prev_x, config.prev_y),
+                             (avg_x, avg_y),
+                             config.pen_color,
+                             5)
                 else:
-                    # continued pinch (holding down): normal drawing
-                    if prev_x is not None and prev_y is not None:
-                        cv2.line(canvas, (prev_x, prev_y), (avg_x, avg_y), pen_color, 5)
-                    else:
-                        cv2.circle(canvas, (avg_x, avg_y), 8, pen_color, -1)
-                    prev_x, prev_y = avg_x, avg_y
+                    # First point of a new stroke: draw a dot
+                    cv2.circle(canvas,
+                               (avg_x, avg_y),
+                               8,
+                               config.pen_color,
+                               -1)
+                # Update prev_x, prev_y for the next frame
+                config.prev_x, config.prev_y = avg_x, avg_y
 
-                prev_gesture = cur_gesture
+                prev_gesture = "drawing"
 
-
-            elif is_hand_open(hands_exactly_there):
-                # Erase with a big black circle
+            # 6c. Open-palm gesture (all fingers extended) for erasing
+            elif is_hand_open(hand_landmarks):
+                mode_text += " | Erasing"  # Update status to indicate erase mode
+                # Erase by drawing a large circle of "black" (0 pixel value) on the canvas at the fingertip position
                 cv2.circle(canvas, (avg_x, avg_y), 30, (0, 0, 0), -1)
-                prev_x, prev_y = None, None
+                # Reset drawing continuity (lifting the pen up)
+                config.prev_x = config.prev_y = None
                 prev_gesture = "pen_up"
-                ok_saved = False
-                mode_text += "Erasing"
+                ok_saved = False  # Reset save flag since hand is now open (not saving)
+
+            # 6d. No specific gesture detected (hand is present but neither pinch, open, nor OK)
             else:
-                # Hand is not in any active drawing state
-                prev_x, prev_y = None, None
+                mode_text += " | Pen Up"  # Indicate that the "pen" (fingertip) is not touching (no drawing)
+                config.prev_x = config.prev_y = None
                 prev_gesture = "pen_up"
                 ok_saved = False
-                mode_text += "Pen Up"
-            # ——— Timed OK‐hold save logic ———
-            now = time.time()
+
+            # 7. Handle the OK-sign hold logic for saving the page
+            current_time = time.time()
             if ok_now:
+                # If currently in OK gesture
                 if hold_start is None:
-                    hold_start = now
-                elif (now - hold_start + HOLD_FAULT_TOLERANCE) >= HOLD_DURATION and not ok_saved:
-                    # 1) Build a timestamped filename
-                    save_dir = os.path.expanduser("~/Desktop")
-                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"pdf_annotated_page{current_page+1}_{ts}.png"
-                    path = os.path.join(save_dir, filename)
-
-                    # 2) Compose overlay and save exactly what’s on screen
-                    overlay = page_img.copy()
-                    gray_tmp = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
-                    _, mask_tmp = cv2.threshold(gray_tmp, 1, 255, cv2.THRESH_BINARY)
-                    bg_tmp = cv2.bitwise_and(overlay, overlay, mask=cv2.bitwise_not(mask_tmp))
-                    fg_tmp = cv2.bitwise_and(canvas,   canvas,   mask=mask_tmp)
-                    cv2.imwrite(path, cv2.add(bg_tmp, fg_tmp))
-
+                    hold_start = current_time  # Start timing the hold
+                elif (current_time - hold_start) >= HOLD_DURATION - HOLD_FAULT_TOLERANCE and not ok_saved:
+                    # If the OK gesture has been held long enough and save not done yet:
+                    save_annotated_page()  # Save the current page with annotations
                     ok_saved = True
-                    mode_text += f" Saved {filename}"
+                    mode_text += " | Saved"  # Append confirmation in status text
             else:
-                hold_start = None
+                hold_start = None  # Reset the hold timer if OK gesture is not active
 
-        # If the cursor is visible (i.e., we have a tracked fingertip), add its X position to the swipe buffer.
-        # Otherwise, clear the buffer so we only detect swipes when the hand is present.
-        if hands_where.multi_hand_landmarks and is_hand_open(hands_exactly_there):
-            swipe_buffer.append(avg_x)
+            # 8. Swipe detection for page navigation (based on open hand horizontal movement)
+            if is_hand_open(hand_landmarks):
+                # Collect the current x-position for swipe analysis
+                swipe_buffer.append(avg_x)
+                if swipe_cooldown > 0:
+                    swipe_cooldown -= 1  # Countdown the cooldown if it's active
+                else:
+                    # Only attempt to detect a swipe if not in cooldown
+                    if len(swipe_buffer) == SWIPE_BUFFER_SIZE:
+                        # Check the overall horizontal movement across the buffered positions
+                        delta_x = swipe_buffer[-1] - swipe_buffer[0]
+                        if delta_x > SWIPE_THRESHOLD_PX:
+                            # Significant movement to the right (hand moved rightward) -> Navigate to previous page
+                            if config.current_page > 0:
+                                config.current_page -= 1
+                                click_feedback = "Previous Page"
+                            else:
+                                # Already at the first page, cannot go further left
+                                click_feedback = "First Page"
+                            feedback_frames = 60
+                            swipe_cooldown = SWIPE_COOLDOWN
+                            swipe_buffer.clear()
+                        elif delta_x < -SWIPE_THRESHOLD_PX:
+                            # Significant movement to the left (hand moved leftward) -> Navigate to next page
+                            if config.current_page < len(config.pdf_pages) - 1:
+                                config.current_page += 1
+                                click_feedback = "Next Page"
+                            else:
+                                # Already at the last page, cannot go further right
+                                click_feedback = "Last Page"
+                            feedback_frames = 60
+                            swipe_cooldown = SWIPE_COOLDOWN
+                            swipe_buffer.clear()
+            else:
+                # If hand is not open (or no hand present), reset swipe tracking
+                swipe_buffer.clear()
+
         else:
+            # No hand detected in this frame
+            prev_gesture = "pen_up"
+            hold_start = None
+            ok_saved = False
+            # Clear swipe tracking if no hand
             swipe_buffer.clear()
 
-        # Once the buffer is full and we're not in a cooldown period, check for a horizontal swipe.
-        if swipe_cooldown == 0 and len(swipe_buffer) == SWIPE_BUFFER_SIZE:
-            # Compute the net movement from the oldest to the newest point
-            dx = swipe_buffer[-1] - swipe_buffer[0]
-             # If the movement exceeds our threshold, count it as a swipe
-            if abs(dx) > SWIPE_THRESHOLD_PX:
-                if dx < 0:
-                   # Negative dx → finger moved left → go to next page
-                    current_page = (current_page + 1) % len(pdf_pages)
-                else:
-                    # Positive dx → finger moved right → go to previous page
-                    current_page = (current_page - 1) % len(pdf_pages)
-                # Reset drawing state so you don’t continue drawing when you change page
-                prev_x, prev_y = None, None
-                # Start a short cooldown to avoid multiple flips from one swipe
-                swipe_cooldown = SWIPE_COOLDOWN_FRAMES
-                swipe_buffer.clear()  # Clear the buffer so you start fresh after the swipe
+        # 9. Prepare the final image for display by combining the PDF page with the annotations
+        # Create a mask of where the canvas has drawings (non-zero pixels)
+        canvas_gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(canvas_gray, 1, 255, cv2.THRESH_BINARY)
+        mask_inv = cv2.bitwise_not(mask)
+        # Combine page image and canvas using the mask
+        page_without_annots = cv2.bitwise_and(page_img, page_img, mask=mask_inv)  # areas with no annotations
+        annots_only = cv2.bitwise_and(canvas, canvas, mask=mask)                  # the drawn annotations only
+        display_img = cv2.add(page_without_annots, annots_only)                  # page with annotations overlaid
 
-        # If we’re in a cooldown, decrement it each frame until it reaches zero
-        if swipe_cooldown > 0:
-            swipe_cooldown -= 1
+        # Draw the UI buttons onto the display image
+        draw_buttons(display_img, button_specs)
 
+        # If a fingertip cursor is available, draw it on the display image
+        if draw_cursor and avg_x is not None and avg_y is not None:
+            cv2.circle(display_img, (avg_x, avg_y), 10, config.cursor_color, -1)
 
-        # Use a mask-overlay instead of raw addWeighted to draw on the PDF page
-        # Make a copy of the PDF page
-        output = page_img.copy()
+        # Append any feedback text (button click or page navigation) to the mode_text if active
+        if feedback_frames > 0 and click_feedback:
+            mode_text += f" | {click_feedback}"
+            feedback_frames -= 1
+            if feedback_frames == 0:
+                click_feedback = ""  # Clear feedback text after it has been shown for the desired frames
 
-        # 1) Create a binary mask of where the canvas is non-zero
-        gray = cv2.cvtColor(canvas, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+        # Overlay the status text (mode_text) onto the display image (at the top-left of the page for visibility)
+        cv2.putText(display_img, mode_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(display_img, mode_text, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 1, cv2.LINE_AA)
 
-        # 2) Resize mask (and its inverse) to match output dimensions
-        mask     = cv2.resize(mask,     (output.shape[1], output.shape[0]), interpolation=cv2.INTER_NEAREST)
-        mask_inv = cv2.resize(255 - mask, (output.shape[1], output.shape[0]), interpolation=cv2.INTER_NEAREST)
-
-        # 3) Apply bitwise-and overlays
-        bg     = cv2.bitwise_and(output, output, mask=mask_inv)
-        fg     = cv2.bitwise_and(canvas, canvas,   mask=mask)
-        output = cv2.add(bg, fg)
-
-         # ——— compute mode-text size & top-right position ———
-        (text_size, _) = cv2.getTextSize(
-            mode_text,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,    # font scale
-            2       # thickness
-        )
-        tw, th = text_size
-        x_mode = output.shape[1] - tw - 10
-        y_mode = 30
-
-        # === NEW FEATURE: Draw a green fingertip cursor, so user always knows where writing will occur ===
-        if draw_cursor:
-            cv2.circle(output, (avg_x, avg_y), 15, cursor_color, 3)  # Large, green ring
-            cv2.circle(output, (avg_x, avg_y), 4, cursor_color, -1)  # Small green dot
-
-        # draw mode text top-right
-        cv2.putText(
-            output,
-            mode_text,
-            (x_mode, y_mode),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,                # font scale
-            (0, 255, 0),        # green
-            2,                  # thickness
-            cv2.LINE_AA
-        )
-
-        # draw click-feedback just below the mode text
-        if click_feedback:
-            cv2.putText(
-                output,
-                click_feedback,
-                (x_mode, y_mode + th + 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,                # slightly smaller
-                (0, 255, 0),
-                2,
-                cv2.LINE_AA
-            )
-
-        # draw UI buttons on top
-        for btn in button_specs:
-            x1, y1, x2, y2 = btn["pos"]
-            # filled box
-            cv2.rectangle(output, (x1, y1), (x2, y2), btn["color"], -1)
-            # label in white
-            cv2.putText(
-                output,
-                btn["label"],
-                (x1 + 5, y1 + 35),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                1,
-                cv2.LINE_AA
-            )
-
-        cv2.imshow("PDF Annotation", output)
-
-
-        # Key events: 'd' for next, 'a' for previous page, 'q' to quit
-        # Added capital letters for convenience 
-        # Key events: 'd' for next, 'a' for previous page, 'q' to quit
+        # 10. Show the final composed image in the window
+        cv2.imshow("PDF Annotation", display_img)
+        # Wait briefly for a key press (and to allow image to render). Capture any pressed key.
         key = cv2.waitKey(1) & 0xFF
-
-        if key in (ord('q'), ord('Q')):
+        if key == 27 or key == ord('q'):
+            # Exit if ESC (27) or 'q' is pressed
             break
-        elif pdf_pages and key in (ord('d'), ord('D')):
-            current_page = (current_page + 1) % len(pdf_pages)
-            prev_x, prev_y = None, None
-        elif pdf_pages and key in (ord('a'), ord('A')):
-            current_page = (current_page - 1) % len(pdf_pages)
-            prev_x, prev_y = None, None
+        # Also break out if the window was closed by the user
+        if cv2.getWindowProperty("PDF Annotation", cv2.WND_PROP_AUTOSIZE) < 0:
+            break
 
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    load_pdf()   # Ask user for PDF, prepare images/canvases
-    drawing()    # Enter main annotation loop
-
+    # End of loop - cleanup resources
+    config.cap.release()    # Release the webcam
+    cv2.destroyAllWindows() # Close the OpenCV window(s)
