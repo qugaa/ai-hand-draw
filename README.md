@@ -1,4 +1,4 @@
-# PDF Gesture Annotation Tool
+# ai-hand-draw
 
 Welcome to the **PDF Gesture Annotation Tool**, where annotating PDF pages is as simple as waving your hand. No more fumbling with menus or hunting for the right button—just point, pinch, or swipe in front of your webcam and let the magic happen.
 
@@ -26,20 +26,26 @@ Welcome to the **PDF Gesture Annotation Tool**, where annotating PDF pages is as
 
 1. **Clone this repository**
 
-   ```bash
-   git clone https://github.com/yourusername/pdf-gesture-annotator.git
-   cd pdf-gesture-annotator
-   ```
+```bash
+git clone https://https://github.com/qugaa/ai-hand-draw.git
+cd ai-hand-draw
+pip install -r requirements.txt
+```
 
-2. **Create a virtual environment (optional but recommended)**
+Your `requirements.txt` should include:
 
-   ```bash
-   python -m venv venv
-   source venv/bin/activate    # macOS/Linux
-   venv\\Scripts\\activate   # Windows PowerShell
-   ```
+```
+mediapipe
+opencv-python
+numpy
+pdf2image
+pillow
+PyMuPDF
+```
 
-3. **Install dependencies**
+> On Windows, you may also need to install poppler utilities for `pdf2image`. See its documentation for installation steps.
+
+### Run the Tool
 
    ```bash
    pip install -r requirements.txt
@@ -78,13 +84,6 @@ Whether it’s improving gesture accuracy, adding new features, or polishing the
 3. Commit your changes: `git commit -m 'Add some feature'`.
 4. Push to the branch: `git push origin my-new-feature`.
 5. Open a Pull Request.
-
----
-
-## 📄 License
-
-This project is licensed under the [MIT License](LICENSE).\
-Feel free to use, modify, and share as you see fit.
 
 ---
 
