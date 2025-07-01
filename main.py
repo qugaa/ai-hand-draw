@@ -49,6 +49,11 @@ def run_annotation_loop():
     page_h, page_w = config.pdf_pages[0].shape[:2]        # Height and width of the first page image
     cv2.resizeWindow("PDF Annotation", page_w, page_h)    # Set the OpenCV window to the PDF page size
 
+    # Mirror preview of your webcam
+    cv2.namedWindow("Webcam Preview", cv2.WINDOW_NORMAL)
+    # Optional: force a compact preview size
+    cv2.resizeWindow("Webcam Preview", 320, 240)
+
     # --- Initialize gesture state flags and variables ---
     ok_saved = False           # Indicates if a save action was performed after detecting OK gesture (to prevent multiple saves per hold)
     prev_gesture = "pen_up"    # Tracks the previous gesture state ("pen_up", "drawing", etc.)
@@ -74,7 +79,8 @@ def run_annotation_loop():
             # If frame capture failed (camera disconnected or end of stream), exit the loop
             print("Camera capture failed or ended.")
             break
-        frame = cv2.flip(frame, 1)  # Mirror the frame horizontally for natural interaction (like a mirror)
+        frame = cv2.flip(frame, 1)  # Mirror the frame horizontally for natural interaction (like a mirror)        
+        cv2.imshow("Webcam Preview", frame) # Show the raw webcam feed in its own window
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert BGR frame to RGB for Mediapipe processing
 
         # 2. Hand landmark detection using Mediapipe
