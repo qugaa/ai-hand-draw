@@ -120,77 +120,83 @@ def run_annotation_loop():
             avg_y = sum(pt[1] for pt in config.point_buffer) // len(config.point_buffer)
             draw_cursor = True  # Indicate that we have a cursor position to draw
 
-            # 6a. OK-sign gesture (index finger and thumb touching, other fingers up) for save action
-            if is_ok_sign(hand_landmarks):
-                ok_now = True
-                mode_text += " | OK held"  # Add status text indicating the OK gesture is being held
+            # Detect all gestures once
+            ok_now    = is_ok_sign(hand_landmarks)
+            pinch_now = is_pinch(hand_landmarks)
+            open_now  = is_hand_open(hand_landmarks)
 
-            # 6b. Pinch gesture for drawing or UI button clicks
-            if is_pinch(hand_landmarks):
-                # Cancel any ongoing OK-sign save timing
+            # 6a) OK-sign branch (highest priority)
+            if ok_now:
+                mode_text += " | OK held"
+                # Start or continue the hold timer
+                if hold_start is None:
+                    hold_start = time.time()
+                elif (time.time() - hold_start) >= HOLD_DURATION:
+                    # Only save once per hold
+                    if not ok_saved:
+                        save_annotated_page()
+                        ok_saved = True
+                        mode_text += " | Saved"
+                        # Reset drawing state so no immediate stroke
+                        prev_gesture = "pen_up"
+                        config.prev_x = config.prev_y = None
+
+            # 6b) Drawing branch (pinch), only if NOT OK-sign
+            elif pinch_now:
+                # Cancel any pending save
                 hold_start = None
                 ok_saved = False
                 mode_text += " | Drawing"
 
-                # On the very first frame of a new pinch (prev_gesture was pen_up),
-                # check if the finger is “clicking” on a UI button:
+                # On initial transition from pen_up → drawing, check button clicks
                 if prev_gesture == "pen_up":
                     for btn in button_specs:
-                        x1, y1, x2, y2 = btn['pos']
+                        x1,y1,x2,y2 = btn['pos']
                         if x1 <= avg_x <= x2 and y1 <= avg_y <= y2:
-                            # We clicked a button—give feedback and perform action:
                             click_feedback = f"Clicked: {btn['label']}"
-                            feedback_frames = 60  # show for ~2 seconds
+                            feedback_frames = 60
                             if btn['label'] == 'Clear':
-                                # Erase entire canvas for this page
                                 config.page_canvases[config.current_page][:] = 0
                             else:
-                                # Change pen color to the button’s color
                                 config.pen_color = btn['color']
-                            # Reset previous line endpoint so stroke restarts next time
                             config.prev_x, config.prev_y = None, None
                             break
 
-                # --- ALWAYS draw a stroke (line or dot) on every frame of pinch ---
+                # ALWAYS draw a stroke segment (or dot) each frame of the pinch
                 if config.prev_x is not None and config.prev_y is not None:
-                    # Continue the line from last point to this frame’s avg_x,avg_y
                     cv2.line(canvas,
-                             (config.prev_x, config.prev_y),
-                             (avg_x, avg_y),
-                             config.pen_color,
-                             5)
+                            (config.prev_x, config.prev_y),
+                            (avg_x, avg_y),
+                            config.pen_color,
+                            5)
                 else:
-                    # First point of a new stroke: draw a dot
                     cv2.circle(canvas,
-                               (avg_x, avg_y),
-                               8,
-                               config.pen_color,
-                               -1)
-                # Update prev_x, prev_y for the next frame
+                            (avg_x, avg_y),
+                            8,
+                            config.pen_color,
+                            -1)
                 config.prev_x, config.prev_y = avg_x, avg_y
-
                 prev_gesture = "drawing"
 
-            # 6c. Open-palm gesture (all fingers extended) for erasing
-            elif is_hand_open(hand_landmarks):
-                mode_text += " | Erasing"  # Update status to indicate erase mode
-                # Erase by drawing a large circle of "black" (0 pixel value) on the canvas at the fingertip position
-                cv2.circle(canvas, (avg_x, avg_y), 30, (0, 0, 0), -1)
-                # Reset drawing continuity (lifting the pen up)
-                config.prev_x = config.prev_y = None
-                prev_gesture = "pen_up"
-                ok_saved = False  # Reset save flag since hand is now open (not saving)
-
-            # 6d. No specific gesture detected (hand is present but neither pinch, open, nor OK)
-            else:
-                mode_text += " | Pen Up"  # Indicate that the "pen" (fingertip) is not touching (no drawing)
+            # 6c) Erasing branch (open palm)
+            elif open_now:
+                mode_text += " | Erasing"
+                cv2.circle(canvas, (avg_x, avg_y), 30, (0,0,0), -1)
                 config.prev_x = config.prev_y = None
                 prev_gesture = "pen_up"
                 ok_saved = False
 
+            # 6d) No gesture → pen up
+            else:
+                mode_text += " | Pen Up"
+                config.prev_x = config.prev_y = None
+                prev_gesture = "pen_up"
+                hold_start = None
+                ok_saved = False
+
             # 7. Handle the OK-sign hold logic for saving the page
             current_time = time.time()
-            if ok_now:
+            if ok_now and not ok_saved:
                 # If currently in OK gesture
                 if hold_start is None:
                     hold_start = current_time  # Start timing the hold
@@ -199,6 +205,9 @@ def run_annotation_loop():
                     save_annotated_page()  # Save the current page with annotations
                     ok_saved = True
                     mode_text += " | Saved"  # Append confirmation in status text
+                    # after saving, reset drawing state so we don't immediately start drawing
+                    prev_gesture = "pen_up"
+                    config.prev_x = config.prev_y = None
             else:
                 hold_start = None  # Reset the hold timer if OK gesture is not active
 
