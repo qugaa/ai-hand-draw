@@ -43,6 +43,8 @@ numpy
 pdf2image
 pillow
 PyMuPDF
+PySimpleGUI
+
 ```
 
 > On Windows, you may also need to install poppler utilities for `pdf2image`. See its documentation for installation steps.
@@ -102,9 +104,6 @@ Contributions, issues, and feature requests are welcome! Feel free to open an is
 
 ---
 
-## 📄 License
-
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
 
 ---
 
