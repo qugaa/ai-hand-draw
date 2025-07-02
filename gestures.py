@@ -7,6 +7,7 @@ Each function returns a boolean indicating whether the gesture is active.
 
 # --- Third-party imports ---
 import mediapipe as mp  # Import Mediapipe library (for access to landmark data structures)
+from math import hypot
 
 # Mediapipe hand landmark indices for fingertips and their base (MCP) joints:
 _FINGER_TIPS = [8, 12, 16, 20]  # Indices of tip landmarks for Index, Middle, Ring, Pinky fingers
@@ -83,3 +84,38 @@ def is_ok_sign(landmarks, rel_thresh=0.35) -> bool:
         if mcp.y - tip.y > 0.01:
             extended += 1
     return extended == 3  # True if all three non-pinching fingers are extended
+
+def is_point_up(landmarks, rel_frac=0.12, thumb_frac=0.95) -> bool:
+    """
+    Detects a “point” gesture with relaxed thresholds:
+      - index extended ~12% of hand size
+      - other fingers curled below that same threshold
+      - thumb folded within ~75% of hand size from wrist
+    """
+    # 1) hand size = distance wrist→middle-MCP
+    wrist   = landmarks.landmark[0]
+    mid_mcp = landmarks.landmark[9]
+    hand_size = hypot(wrist.x - mid_mcp.x, wrist.y - mid_mcp.y)
+    y_thresh  = hand_size * rel_frac
+
+    # 2) index must poke up
+    idx_tip = landmarks.landmark[8]
+    idx_mcp = landmarks.landmark[5]
+    if (idx_mcp.y - idx_tip.y) < y_thresh:
+        return False
+
+    # 3) middle/ring/pinky must be down
+    for tip_id, mcp_id in zip(_FINGER_TIPS[1:], _FINGER_MCPS[1:]):
+        tip = landmarks.landmark[tip_id]
+        mcp = landmarks.landmark[mcp_id]
+        if (mcp.y - tip.y) > y_thresh:
+            return False
+
+    # 4) thumb can’t stick out too far
+    thumb_tip = landmarks.landmark[4]
+    thumb_dist = hypot(thumb_tip.x - wrist.x, thumb_tip.y - wrist.y)
+    if thumb_dist > hand_size * thumb_frac:
+        return False
+
+    return True
+

@@ -15,7 +15,7 @@ import numpy as np     # NumPy for image array operations
 # --- Local module imports ---
 import config                                   # Import the config module containing global state
 from pdf_loader import load_pdf                 # Function to load PDF pages into memory
-from gestures import is_hand_open, is_pinch, is_ok_sign  # Gesture detection helper functions
+from gestures import is_hand_open, is_pinch, is_ok_sign, is_point_up  # Gesture detection helper functions
 from ui_helpers import get_button_specs, draw_buttons, save_annotated_page  # UI helper functions
 
 def run_annotation_loop():
@@ -27,6 +27,10 @@ def run_annotation_loop():
       4. Navigates pages when swipe gestures are detected.
       5. Saves the annotated page when an OK gesture is held.
       6. Overlays annotations and UI on the PDF page and displays it.
+      7. Handle the OK-sign hold logic for saving the page
+      8. Swipe detection for page navigation (point-and-swipe)
+      9. Prepare the final image for display by combining the PDF page with the annotations
+      10. Show the final composed image in the window
     """
     # Ensure a PDF is loaded before starting the loop
     if not config.pdf_pages:
@@ -65,9 +69,9 @@ def run_annotation_loop():
 
     # --- Swipe gesture detection setup ---
     from collections import deque
-    SWIPE_BUFFER_SIZE = 16    # Number of recent frames to consider for swipe movement
-    SWIPE_THRESHOLD_PX = 400  # Minimum horizontal movement (in pixels) to qualify as a swipe
-    SWIPE_COOLDOWN = 20       # Cooldown period (in frames) after a swipe to avoid immediate repeat
+    SWIPE_BUFFER_SIZE = 8    # Number of recent frames to consider for swipe movement
+    SWIPE_THRESHOLD_PX = 200  # Minimum horizontal movement (in pixels) to qualify as a swipe
+    SWIPE_COOLDOWN = 30       # Cooldown period (in frames) after a swipe to avoid immediate repeat
     swipe_buffer = deque(maxlen=SWIPE_BUFFER_SIZE)  # Buffer to store recent finger x-coordinates for swipe analysis
     swipe_cooldown = 0        # Counter for swipe cooldown frames remaining
 
@@ -130,6 +134,7 @@ def run_annotation_loop():
             ok_now    = is_ok_sign(hand_landmarks)
             pinch_now = is_pinch(hand_landmarks)
             open_now  = is_hand_open(hand_landmarks)
+            point_now  = is_point_up(hand_landmarks)
 
             # 6a) OK-sign branch (highest priority)
             if ok_now:
@@ -217,41 +222,35 @@ def run_annotation_loop():
             else:
                 hold_start = None  # Reset the hold timer if OK gesture is not active
 
-            # 8. Swipe detection for page navigation (based on open hand horizontal movement)
-            if is_hand_open(hand_landmarks):
-                # Collect the current x-position for swipe analysis
+             #8. Swipe detection for page navigation (point-and-swipe)
+            if point_now and not (ok_now or pinch_now or open_now):
+                mode_text += " | Swipe to change page"
                 swipe_buffer.append(avg_x)
                 if swipe_cooldown > 0:
-                    swipe_cooldown -= 1  # Countdown the cooldown if it's active
-                else:
-                    # Only attempt to detect a swipe if not in cooldown
-                    if len(swipe_buffer) == SWIPE_BUFFER_SIZE:
-                        # Check the overall horizontal movement across the buffered positions
-                        delta_x = swipe_buffer[-1] - swipe_buffer[0]
-                        if delta_x > SWIPE_THRESHOLD_PX:
-                            # Significant movement to the right (hand moved rightward) -> Navigate to previous page
-                            if config.current_page > 0:
-                                config.current_page -= 1
-                                click_feedback = "Previous Page"
-                            else:
-                                # Already at the first page, cannot go further left
-                                click_feedback = "First Page"
-                            feedback_frames = 60
-                            swipe_cooldown = SWIPE_COOLDOWN
-                            swipe_buffer.clear()
-                        elif delta_x < -SWIPE_THRESHOLD_PX:
-                            # Significant movement to the left (hand moved leftward) -> Navigate to next page
-                            if config.current_page < len(config.pdf_pages) - 1:
-                                config.current_page += 1
-                                click_feedback = "Next Page"
-                            else:
-                                # Already at the last page, cannot go further right
-                                click_feedback = "Last Page"
-                            feedback_frames = 60
-                            swipe_cooldown = SWIPE_COOLDOWN
-                            swipe_buffer.clear()
+                    swipe_cooldown -= 1
+                elif len(swipe_buffer) == SWIPE_BUFFER_SIZE:
+                    delta_x = swipe_buffer[-1] - swipe_buffer[0]
+                    if delta_x > SWIPE_THRESHOLD_PX:
+                        # Swipe right → Previous page
+                        if config.current_page > 0:
+                            config.current_page -= 1
+                            click_feedback = "Previous Page"
+                        else:
+                            click_feedback = "First Page"
+                        feedback_frames = 60
+                        swipe_cooldown = SWIPE_COOLDOWN
+                        swipe_buffer.clear()
+                    elif delta_x < -SWIPE_THRESHOLD_PX:
+                        # Swipe left → Next page
+                        if config.current_page < len(config.pdf_pages) - 1:
+                            config.current_page += 1
+                            click_feedback = "Next Page"
+                        else:
+                            click_feedback = "Last Page"
+                        feedback_frames = 60
+                        swipe_cooldown = SWIPE_COOLDOWN
+                        swipe_buffer.clear()
             else:
-                # If hand is not open (or no hand present), reset swipe tracking
                 swipe_buffer.clear()
 
         else:
