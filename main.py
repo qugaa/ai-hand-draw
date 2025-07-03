@@ -93,7 +93,8 @@ def run_annotation_loop():
             config.point_buffer.append((cx, cy))
             avg_x = sum(pt[0] for pt in config.point_buffer) // len(config.point_buffer)
             avg_y = sum(pt[1] for pt in config.point_buffer) // len(config.point_buffer)
-
+            draw_cursor = True
+            
             # Detect all gestures once
             ok_now    = is_ok_sign(hand_landmarks)
             pinch_now = is_pinch(hand_landmarks)
