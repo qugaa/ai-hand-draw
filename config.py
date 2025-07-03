@@ -1,46 +1,31 @@
-# -*- coding: utf-8 -*-
-"""
-config.py: Centralizes all global settings, imports, and initial objects
-required by the PDF Gesture Annotation Tool.
-"""
+import os               
+import datetime         
+import time           
+import cv2          
+import mediapipe as mp  
+from collections import deque 
 
-# --- Standard library imports ---
-import os               # Provides OS filesystem operations (e.g., for path handling)
-import datetime         # Used for generating timestamped filenames (e.g., for saved images)
-import time             # Used for measuring elapsed time (e.g., OK gesture hold duration)
+SMOOTHING_WINDOW = 5  # Amount of frame history to smooth cursor movement
+point_buffer = deque(maxlen=SMOOTHING_WINDOW)  
 
-# --- Third-party imports ---
-import cv2              # OpenCV for webcam capture and image processing
-import mediapipe as mp  # Mediapipe for real-time hand detection and tracking
-from collections import deque  # deque provides an efficient fixed-length queue for smoothing points
+mp_hands = mp.solutions.hands  # type: ignore[reportUndefinedVariable](falsepositive)
 
-# ----- SMOOTHING CONFIG -----
-SMOOTHING_WINDOW = 5  # Number of recent fingertip points to average for smoothing cursor movement
-point_buffer = deque(maxlen=SMOOTHING_WINDOW)  # Buffer to store the last few (x, y) points of the fingertip
-
-# ----- MEDIAPIPE HANDS SETUP -----
-mp_hands = mp.solutions.hands  # Reference to Mediapipe's Hands solution class (ignore IDE type-checking errors) # type: ignore[reportUndefinedVariable](falsepositive)
-# Initialize the Mediapipe Hands model for live video processing:
 hands = mp_hands.Hands(
-    static_image_mode=False,       # Process input as a continuous video stream (not static images)
-    max_num_hands=1,               # Detect and track at most one hand at a time
-    min_detection_confidence=0.5,  # Minimum confidence value (0-1) for the hand detection to be considered successful
-    min_tracking_confidence=0.5    # Minimum confidence value (0-1) for hand landmark tracking to be considered successful
+    static_image_mode=False,
+    max_num_hands=1,               # Amount of hands to detect
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
-mp_draw = mp.solutions.drawing_utils  # Utility for drawing hand landmarks on images (ignore IDE type-checking errors) # type: ignore[reportUndefinedVariable](falsepositive)
+mp_draw = mp.solutions.drawing_utils  # type: ignore[reportUndefinedVariable](falsepositive)
 
-# ----- OPENCV CAMERA INITIALIZATION -----
-cap = cv2.VideoCapture(0)  # Open a connection to the default webcam (device index 0)
+cap = cv2.VideoCapture(0)
 
-# ----- CANVAS AND CURSOR STATE -----
-canvas = None               # Will hold the current page's annotation overlay image (initialized when a PDF is loaded)
-prev_x, prev_y = None, None # Last known fingertip coordinates (for drawing continuous lines)
+canvas = None
+prev_x, prev_y = None, None
 
-# ----- PDF NAVIGATION STATE -----
-pdf_pages = []      # List of images (as numpy arrays) for each page of the loaded PDF (initially empty)
-page_canvases = []  # Parallel list of blank canvas images corresponding to each PDF page (for annotations)
-current_page = 0    # Index of the currently displayed PDF page (0-based)
+pdf_pages = []
+page_canvases = []
+current_page = 0
 
-# ----- DRAWING STATE DEFAULTS -----
-pen_color = (0, 0, 255)    # Default drawing color for annotations (BGR format: red)
-cursor_color = (0, 255, 0) # Color for the fingertip cursor indicator (BGR format: green)
+pen_color = (0, 0, 255)    # Default color (red)
+cursor_color = (0, 255, 0) # Cursor color (green)
