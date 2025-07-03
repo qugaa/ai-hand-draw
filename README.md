@@ -1,4 +1,4 @@
-# ai-hand-draw
+# PDF Gesture Annotation Tool
 
 Welcome to the **PDF Gesture Annotation Tool**, where annotating PDF pages is as simple as waving your hand. No more fumbling with menus or hunting for the right button—just point, pinch, or swipe in front of your webcam and let the magic happen.
 
@@ -16,7 +16,7 @@ Welcome to the **PDF Gesture Annotation Tool**, where annotating PDF pages is as
 
 - **Draw Anywhere**: Pinch your index finger and thumb together, then move to sketch lines or dots on the page.
 - **Erase Easily**: Open your palm and hover over any marks to erase them like a digital eraser.
-- **Navigate Pages**: Swipe left or right in the air to flip through your document.
+- **Navigate Pages**: Swipe left or right while your index finger is up in the air to flip through your document.
 - **Save with a Gesture**: Form an OK sign and hold for two seconds to snapshot your annotated page.
 - **Color Picker & Clear**: Pinch on the on‑screen color buttons to switch pen colors or clear the page entirely.
 
@@ -39,7 +39,9 @@ mediapipe
 opencv-python
 numpy
 pdf2image
-pillow
+Pillow
+FreeSimpleGUI
+PySimpleGUI
 PyMuPDF
 ```
 
@@ -69,21 +71,9 @@ PyMuPDF
    - **Open palm** to erase.
    - **Swipe** left/right to change pages.
    - **Hold OK sign** for two seconds to save a snapshot.
+   - **Point Finger Up** to be able to swipe through pages.
 
 4. To exit, press **Esc** or **‘q’**, or click the window’s close button.
-
----
-
-## 🤝 Contributing
-
-We’d love your help!\
-Whether it’s improving gesture accuracy, adding new features, or polishing the UI, your pull requests are welcome.
-
-1. Fork the repo.
-2. Create a feature branch: `git checkout -b my-new-feature`.
-3. Commit your changes: `git commit -m 'Add some feature'`.
-4. Push to the branch: `git push origin my-new-feature`.
-5. Open a Pull Request.
 
 ---
 
