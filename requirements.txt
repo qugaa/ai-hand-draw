@@ -1,8 +1,6 @@
-mediapipe
-opencv-python
-numpy
-pdf2image
-Pillow
-FreeSimpleGUI
-PySimpleGUI
-PyMuPDF
+# Core runtime
+mediapipe>=0.10.14        # hand landmark tracking
+opencv-contrib-python>=4.9 # required by mediapipe; provides cv2 (do NOT also install opencv-python)
+numpy>=1.26
+pymupdf>=1.24             # PDF rendering + export (replaces pdf2image/Poppler)
+customtkinter>=5.2        # dark-mode launcher (replaces FreeSimpleGUI)

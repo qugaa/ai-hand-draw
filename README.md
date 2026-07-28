@@ -1,82 +1,109 @@
-# PDF Gesture Annotation Tool
+# AI Hand Draw
 
-Welcome to the **PDF Gesture Annotation Tool**, where annotating PDF pages is as simple as waving your hand. No more fumbling with menus or hunting for the right button—just point, pinch, or swipe in front of your webcam and let the magic happen.
-
----
-
-## ✨ Why You’ll Love It
-
-- **Hands‑free workflow**: Draw, erase, navigate, and save—without touching your mouse or keyboard.
-- **Intuitive gestures**: Pinch to draw, open palm to erase, swipe to turn pages, and hold an OK sign to save. It’s like using a digital pen, only cooler.
-- **Works on any PDF**: Whether you’re marking up lecture slides, reviewing contracts, or sketching ideas on your favorite eBook, it’s ready.
+Annotate any PDF in mid‑air. Pinch to draw, open your palm to erase, point and swipe to turn the
+page, hold an OK sign to save. Your webcam is the pen.
 
 ---
 
-## 🎯 Key Features
+## ✨ Highlights
 
-- **Draw Anywhere**: Pinch your index finger and thumb together, then move to sketch lines or dots on the page.
-- **Erase Easily**: Open your palm and hover over any marks to erase them like a digital eraser.
-- **Navigate Pages**: Swipe left or right while your index finger is up in the air to flip through your document.
-- **Save with a Gesture**: Form an OK sign and hold for two seconds to snapshot your annotated page.
-- **Color Picker & Clear**: Pinch on the on‑screen color buttons to switch pen colors or clear the page entirely.
+- **Hands‑free workflow** — draw, erase, navigate and save without touching mouse or keyboard.
+- **Rotation‑invariant gestures** — tilt or turn your hand however you like; recognition uses 3D
+  joint geometry normalised by palm size, not raw screen coordinates.
+- **No distortion** — a mapping zone matching the page's aspect ratio is carved out of the camera
+  frame, so a circle drawn in the air is a circle on the page.
+- **No Poppler, no external binaries** — pages are rendered by PyMuPDF.
+- **Dark, modern UI** — a CustomTkinter launcher plus a translucent on‑screen HUD that stays legible
+  over dense documents and re‑lays itself out whenever you resize the window.
+- **Exports** — PNG snapshots, or an annotated copy of the PDF where the original pages stay vector
+  and searchable.
+
+---
+
+## 🎯 Gestures & keys
+
+| Gesture | Action |
+| --- | --- |
+| Pinch (thumb + index) | Draw; pinch over a toolbar button to press it |
+| Open palm | Erase |
+| Index finger up, then swipe | Previous / next page |
+| OK sign, held ~1.2 s | Save the current page as PNG (a ring shows the progress) |
+
+| Key | Action |
+| --- | --- |
+| `S` / `D` | Save page as PNG / save annotated PDF |
+| `C` | Clear the page |
+| `N` / `P` | Next / previous page |
+| `1`–`4` | Pen colour |
+| `H` / `V` | Toggle help strip / camera preview |
+| `Esc`, `Q`, or the window's ✕ | Quit |
 
 ---
 
 ## 🛠️ Installation
 
-1. **Clone this repository**
-
 ```bash
-git clone https://https://github.com/qugaa/ai-hand-draw.git
+git clone https://github.com/qugaa/ai-hand-draw.git
 cd ai-hand-draw
 pip install -r requirements.txt
 ```
 
-Your `requirements.txt` should include:
+Requires Python 3.10+. Install `opencv-contrib-python` (pulled in by `mediapipe`) rather than
+`opencv-python` — having both installed breaks `cv2`.
 
-```
-mediapipe
-opencv-python
-numpy
-pdf2image
-Pillow
-FreeSimpleGUI
-PySimpleGUI
-PyMuPDF
-```
-
-> On Windows, you may also need to install poppler utilities for `pdf2image`. See its documentation for installation steps.
-
-### Run the Tool
-
-   ```bash
-   pip install -r requirements.txt
-   ```
+On MediaPipe 0.10.30 and newer the legacy `mp.solutions` graphs are gone, so the app uses the Tasks
+API and downloads `hand_landmarker.task` (7.5 MB) once, into
+`%LOCALAPPDATA%\AI Hand Draw\models` (or `~/.cache/AI Hand Draw/models`). To supply it yourself, drop
+it in `models/` next to this README or point `HANDDRAW_HAND_MODEL` at it. Older MediaPipe releases
+keep working through the legacy backend, with no model download.
 
 ---
 
 ## 🚀 Usage
 
-1. **Launch the GUI launcher**
+```bash
+python app.py                       # dark‑mode launcher
+python app.py --pdf notes.pdf       # skip the launcher
+python app.py --pdf notes.pdf --camera 1 --dpi 200 --output D:\scans --no-preview
+```
 
-   ```bash
-   python gui.py
-   ```
-
-2. Click **Open & Annotate PDF** and choose your file.
-
-3. The annotation window will open—start waving your hand:
-
-   - **Pinch** to draw or select a button.
-   - **Open palm** to erase.
-   - **Swipe** left/right to change pages.
-   - **Hold OK sign** for two seconds to save a snapshot.
-   - **Point Finger Up** to be able to swipe through pages.
-
-4. To exit, press **Esc** or **‘q’**, or click the window’s close button.
+Annotations are saved to a writable folder chosen at startup — your real Desktop (resolved through
+the Windows known‑folder API, so OneDrive redirection is handled), else Documents, else your home
+directory. Pick a different one in the launcher at any time.
 
 ---
 
-Thanks for trying out the PDF Gesture Annotation Tool! 🎉\
-If you run into any issues or have feedback, drop an issue on GitHub or say hi in the discussion board. Happy annotating!
+## 🧭 Architecture
 
+```
+app.py                 entry point (launcher or --pdf headless)
+handdraw/
+  settings.py          immutable AppSettings + Theme; importing it touches no hardware
+  paths.py             Desktop/Documents resolution, writability probing, safe filenames
+  document.py          PyMuPDF rendering, LRU page cache, annotated‑PDF export
+  camera.py            webcam ownership; context manager, deterministic release
+  tracking.py          MediaPipe wrapper (Tasks API + legacy solutions), always closed
+  models.py            one‑time model download with progress and atomic install
+  gestures.py          rotation‑invariant recognition + temporal debouncing
+  mapping.py           aspect‑correct camera→page zone, adaptive smoothing, viewport
+  state.py             per‑page annotation layers with dirty‑region tracking
+  overlay.py           translucent rounded HUD: toolbar, status, help, toasts, preview
+  export.py            PNG and PDF output
+  session.py           the annotation loop and all resource teardown
+  ui/launcher.py       CustomTkinter dark launcher
+```
+
+Design notes:
+
+- **No global mutable state.** Everything lives in `AppSettings` (frozen) and `SessionState`;
+  a session can be created, run and discarded without leaving anything behind.
+- **Nothing at import time.** The camera and MediaPipe are constructed inside the session and
+  released in a `finally` block, so an exception can never leave the webcam locked.
+- **One window.** The camera preview is a picture‑in‑picture panel, and the native ✕ button is
+  honoured via `WND_PROP_VISIBLE`, so no window can be orphaned.
+- **Incremental rendering.** Each page keeps one composited image, edited in place; only the
+  changed region is rescaled per frame. Frames that change nothing cost nothing.
+
+---
+
+Found a bug or have an idea? Open an issue. Happy annotating! 🎉
