@@ -1,1 +1,6 @@
-__pycache__/ 
+__pycache__/
+
+# PyInstaller build artifacts
+/build/
+/dist/
+*.manifest
